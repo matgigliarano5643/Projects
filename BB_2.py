@@ -35,7 +35,6 @@ def load_and_clean_spectrophotometer_data(filepath: str) -> tuple[pd.DataFrame, 
     summary_stats = []
     
     for v in voltages:
-        # Gestione programmatica delle inconsistenze nei nomi delle colonne Excel
         t_col = f'Time (s) {v}V' if v != 7 else 'Time (s) Run 7V'
         a_col = f'Angle (rad) {v}V'
         p_col = f'Position (m) {v}V'
@@ -46,28 +45,22 @@ def load_and_clean_spectrophotometer_data(filepath: str) -> tuple[pd.DataFrame, 
         sub.columns = ['time_s', 'angle_raw_deg', 'position_m', 'intensity_raw', 'lambda_raw_excel']
         sub['voltage'] = v
         
-        # 1. Sottrazione della corrente di buio (Dark-Current Baseline) sui primi 10 campioni (0.5 s)
         baseline = sub['intensity_raw'].iloc[:10].mean()
         sub['intensity_net'] = sub['intensity_raw'] - baseline
         
-        # 2. Calibrazione angolare esatta con pi greco in doppia precisione IEEE 754
         sub['theta_deg'] = -sub['angle_raw_deg'] - zero_offsets[v]
         sub['theta_rad'] = np.deg2rad(sub['theta_deg'])
         
-        # 3. Derivata numerica temporale: velocità angolare di scansione del braccio (deg/s)
         dt = sub['time_s'].diff().replace(0, np.nan).fillna(0.05)
         sub['angular_velocity'] = sub['theta_deg'].diff().fillna(0.0) / dt
         
-        # 4. Calcolo vettorizzato dell'indice di rifrazione n(theta) tramite legge di Snell sul prisma (alpha = 60°)
         sin_term = (2.0 / np.sqrt(3.0)) * np.sin(sub['theta_rad']) + 0.5
         sub['n_prism'] = np.sqrt(sin_term**2 + 0.75)
-        
-        # 5. Inversione di Cauchy con mascheramento della singolarità iperbolica (n <= 1.689)
         delta_n = sub['n_prism'] - CAUCHY_A
         sub['lambda_sq_excel'] = CAUCHY_B / delta_n
         sub['lambda_nm'] = np.where(delta_n > 0, np.sqrt(CAUCHY_B / delta_n), np.nan)
         
-        # 6. Etichettatura fisica dei regimi ottici
+        
         conditions = [
             (sub['theta_deg'].abs() <= 4.0) & (sub['intensity_net'] > 0.5),
             (sub['theta_deg'] > 4.0) & (sub['theta_deg'] < 55.2),
@@ -95,7 +88,6 @@ def run_ml_pipeline(df_clean: pd.DataFrame):
     spectral_matrix = []
     gpr_results = []
     
-    # --- A. GAUSSIAN PROCESS REGRESSION (Denoising & Incertezza Spettrale) ---
     for v in voltages:
         disp = df_clean[(df_clean['voltage'] == v) & 
                         (df_clean['theta_deg'] >= 55.0) & 
@@ -132,7 +124,6 @@ def run_ml_pipeline(df_clean: pd.DataFrame):
     X_spectra = np.array(spectral_matrix)
     df_gpr = pd.DataFrame(gpr_results)
     
-    # --- B. ANALISI DELLE COMPONENTI PRINCIPALI (PCA FUNZIONALE) ---
     pca_pipe = Pipeline([
         ('scaler', StandardScaler()),
         ('pca', PCA(n_components=3, random_state=42))
@@ -142,7 +133,6 @@ def run_ml_pipeline(df_clean: pd.DataFrame):
     df_gpr['PC1_Score'] = Z_pca[:, 0]
     df_gpr['PC2_Score'] = Z_pca[:, 1]
     
-    # --- C. CLASSIFICAZIONE DEI REGIMI OTTICI (RANDOM FOREST) ---
     features_cols = ['voltage', 'theta_deg', 'n_prism', 'angular_velocity']
     X_all = df_clean[features_cols].values
     y_regime = df_clean['optical_regime'].values
@@ -152,13 +142,11 @@ def run_ml_pipeline(df_clean: pd.DataFrame):
     skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
     clf_acc = cross_val_score(rf_clf, X_all, y_regime, cv=skf, scoring='accuracy')
     
-    # --- D. REGRESSIONE GLOBALE & PROBLEMA INVERSO DI CALIBRAZIONE ---
     gbr = GradientBoostingRegressor(n_estimators=200, max_depth=4, learning_rate=0.05, random_state=42)
     kf = KFold(n_splits=5, shuffle=True, random_state=42)
     reg_r2 = cross_val_score(gbr, X_all, y_intensity, cv=kf, scoring='r2')
     reg_rmse = np.sqrt(-cross_val_score(gbr, X_all, y_intensity, cv=kf, scoring='neg_mean_squared_error'))
     
-    # Problema Inverso: Stima della Tensione V dallo Spettro (Leave-One-Out CV)
     X_inv = df_gpr[['Peak_Intensity_Net_%', 'Theta_Peak_deg', 'Spectral_Energy_AUC', 'PC1_Score', 'PC2_Score']].values
     y_inv = df_gpr['Voltage_V'].values
     
@@ -180,7 +168,6 @@ def run_ml_pipeline(df_clean: pd.DataFrame):
     fig, axes = plt.subplots(2, 2, figsize=(14, 10), dpi=150)
     cmap = plt.cm.plasma(np.linspace(0.85, 0.1, len(voltages)))
 
-    # Panel 1: Curve grezze corrette per la baseline
     ax1 = axes[0, 0]
     for idx, v in enumerate(voltages):
         sub = df_clean[df_clean['voltage'] == v].sort_values('theta_deg')
@@ -194,7 +181,6 @@ def run_ml_pipeline(df_clean: pd.DataFrame):
     ax1.legend(fontsize=8, loc='upper left')
     ax1.grid(True, alpha=0.3)
 
-    # Panel 2: Denoising GPR sui picchi spettrali
     ax2 = axes[0, 1]
     for idx, v in enumerate(voltages):
         sub = df_clean[(df_clean['voltage'] == v) & (df_clean['theta_deg'] >= 55.5) & (df_clean['theta_deg'] <= 66.0)]
@@ -208,7 +194,6 @@ def run_ml_pipeline(df_clean: pd.DataFrame):
     ax2.legend(fontsize=8, loc='upper right')
     ax2.grid(True, alpha=0.3)
 
-    # Panel 3: Spazio delle Componenti Principali (PCA)
     ax3 = axes[1, 0]
     ax3.scatter(Z_pca[:, 0], Z_pca[:, 1], c=voltages, cmap='plasma', s=120, edgecolors='k', zorder=3)
     for idx, v in enumerate(voltages):
@@ -219,7 +204,6 @@ def run_ml_pipeline(df_clean: pd.DataFrame):
     ax3.set_ylabel(f'Componente Principale 2 ({exp_var[1]*100:.1f}% varianza)')
     ax3.grid(True, alpha=0.3)
 
-    # Panel 4: Modello Inverso (Predizione Tensione)
     ax4 = axes[1, 1]
     ax4.scatter(y_inv, y_inv_pred, c=voltages, cmap='plasma', s=100, edgecolors='k', zorder=3, label='Predizione LOOCV (Ridge)')
     ax4.plot([5.5, 12.5], [5.5, 12.5], 'r--', lw=1.5, label=f'Ideale (R² = {r2_score(y_inv, y_inv_pred):.3f}, MAE = {mean_absolute_error(y_inv, y_inv_pred):.2f}V)')
