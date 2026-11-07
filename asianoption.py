@@ -56,8 +56,7 @@ def simulate_asian_options():
     print("\n--- Prezzi delle Opzioni Asiatiche (Risk-Neutral Monte Carlo) ---")
     for k, v in prices.items():
         print(f"  {k:18s}: {v:.4f} €")
-        
-    # Creazione del DataFrame per il Machine Learning
+    
     df_paths = pd.DataFrame(S, columns=[f'S_t{i+1}' for i in range(m)])
     df_paths['A_mean'] = A
     df_paths['S_T'] = St
@@ -76,7 +75,6 @@ def run_ml_surrogate_model(df_paths: pd.DataFrame):
     X = sample_df[['S_t1', 'S_t2', 'S_t3', 'A_mean', 'S_T', 'path_std']].values
     y = sample_df['target_payoff'].values
     
-    # Pipeline ufficiale: Scaler -> PCA -> Gradient Boosting Regressor
     ml_pipeline = Pipeline([
         ('scaler', StandardScaler()),
         ('pca', PCA(n_components=3, random_state=42)),
@@ -88,7 +86,6 @@ def run_ml_surrogate_model(df_paths: pd.DataFrame):
         ))
     ])
     
-    # Validazione incrociata a 5 fold (KFold)
     kf = KFold(n_splits=5, shuffle=True, random_state=42)
     cv_r2 = cross_val_score(ml_pipeline, X, y, cv=kf, scoring='r2')
     cv_rmse = np.sqrt(-cross_val_score(ml_pipeline, X, y, cv=kf, scoring='neg_mean_squared_error'))
@@ -104,7 +101,6 @@ def plot_results(S, payoffs, K):
     fig, axes = plt.subplots(1, 2, figsize=(14, 5), dpi=150)
     time_grid = [1/3, 2/3, 1.0]
 
-    # Pannello 1: Percorsi Monte Carlo
     for i in range(50):
         axes[0].plot(time_grid, S[i, :], color='royalblue', alpha=0.3, lw=1.2)
     axes[0].plot(time_grid, np.mean(S[:50, :], axis=0), color='darkred', lw=2.5, label='Media Campionaria')
@@ -115,7 +111,6 @@ def plot_results(S, payoffs, K):
     axes[0].legend(fontsize=9)
     axes[0].grid(True, alpha=0.3)
 
-    # Pannello 2: Distribuzione dei Payoff
     axes[1].hist(payoffs['Call_Avg_Price'], bins=50, color='forestgreen', alpha=0.7, label='Call Avg Price Payoff')
     axes[1].hist(payoffs['Put_Avg_Price'], bins=50, color='darkorange', alpha=0.7, label='Put Avg Price Payoff')
     axes[1].set_title('2. Distribuzione dei Payoff delle Opzioni Asiatiche', fontsize=11, fontweight='bold')
